@@ -1,7 +1,6 @@
 //!
 #![warn(missing_debug_implementations, rust_2018_idioms, missing_docs)] // このcrateに対する警告を有効にする
 
-#[derive(PartialEq, Debug)]
 pub struct StrSplit<'a> {
     remainder: &'a str,
     delimiter: &'a str,
@@ -37,12 +36,7 @@ impl<'a> Iterator for StrSplit<'a> {
 #[test]
 fn it_works() {
     let haystack = "a b c d e";
-    let mut letters = StrSplit::new(haystack, " ");
-    assert_eq!(letters.next(), Some("a"));
-    assert_eq!(letters.next(), Some("b"));
-    assert_eq!(letters.next(), Some("c"));
-    assert_eq!(letters.next(), Some("d"));
-    assert_eq!(letters.next(), Some("e"));
-    assert_eq!(letters.next(), None);
+    let letters = StrSplit::new(haystack, " ");
+    assert!(letters.eq(vec!["a", "b", "c", "d", "e"].into_iter()));
 }
 
