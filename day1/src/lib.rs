@@ -39,4 +39,3 @@ fn it_works() {
     let letters = StrSplit::new(haystack, " ");
     assert!(letters.eq(vec!["a", "b", "c", "d", "e"].into_iter()));
 }
-
