@@ -1,13 +1,46 @@
 use axum::{
-    extract::{Extension, Path},
+    async_trait,
+    extract::{Extension, FromRequest, Path, RequestParts},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, patch, post},
-    Json, Router,
+    BoxError, Json, Router,
 };
+use serde::de::DeserializeOwned;
 use std::sync::Arc;
+use validator::Validate;
 
 use crate::repositories::{CreateTodo, Todo, TodoRepository, UpdateTodo};
+
+#[derive(Debug)]
+pub struct ValidatedJson<T>(T);
+
+#[async_trait]
+impl<T, B> FromRequest<B> for ValidatedJson<T>
+where
+    T: DeserializeOwned + Validate, //
+    B: http_body::Body + Send,      //
+    B::Data: Send,
+    B::Error: Into<axum::BoxError>,
+{
+    type Rejection = (StatusCode, String);
+
+    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
+        // JSONとしてのパースを試行
+        let Json(value) = Json::<T>::from_request(req).await.map_err(|rejection| {
+            let message = format!("Json parse error: [{}]", rejection); //
+            (StatusCode::BAD_REQUEST, message)
+        })?;
+
+        // データのバリデーション実行
+        value.validate().map_err(|rejection| {
+            let message = format!("Validation error: [{}]", rejection).replace('\n', ", "); //
+            (StatusCode::BAD_REQUEST, message)
+        })?;
+
+        Ok(ValidatedJson(value))
+    }
+}
 
 pub fn create_app<T: TodoRepository>(repository: T) -> Router {
     Router::new()
@@ -25,7 +58,7 @@ async fn root() -> &'static str {
 }
 
 pub async fn create_todo<T: TodoRepository>(
-    Json(payload): Json<CreateTodo>,
+    ValidatedJson(payload): ValidatedJson<CreateTodo>,
     Extension(repository): Extension<Arc<T>>,
 ) -> impl IntoResponse {
     let todo: Todo = repository.create(payload);
@@ -51,7 +84,7 @@ pub async fn get_todo<T: TodoRepository>(
 
 pub async fn update_todo<T: TodoRepository>(
     Path(id): Path<i32>,
-    Json(payload): Json<UpdateTodo>,
+    ValidatedJson(payload): ValidatedJson<UpdateTodo>,
     Extension(repository): Extension<Arc<T>>,
 ) -> impl IntoResponse {
     match repository.update(id, payload) {
@@ -116,6 +149,76 @@ mod test {
                 completed: false,
             },
         );
+    }
+
+    #[tokio::test]
+    async fn should_return_400_when_create_todo_with_empty_text() {
+        let repository = TodoRepositoryForMemory::new();
+        let req = Request::builder()
+            .uri("/todos")
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
+            .body(Body::from(r#"{ "text": "" }"#))
+            .unwrap();
+        let res = create_app(repository).oneshot(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn should_return_400_when_create_todo_with_text_over_100_chars() {
+        let repository = TodoRepositoryForMemory::new();
+        let long_text = "a".repeat(101);
+        let req = Request::builder()
+            .uri("/todos")
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
+            .body(Body::from(format!(r#"{{ "text": "{}" }}"#, long_text)))
+            .unwrap();
+        let res = create_app(repository).oneshot(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn should_return_400_when_update_todo_with_empty_text() {
+        let repository = TodoRepositoryForMemory::new();
+        let todo = repository.create(CreateTodo {
+            text: "元のテキスト".to_string(),
+        });
+
+        let app = create_app(repository);
+
+        let req = Request::builder()
+            .uri(format!("/todos/{}", todo.id))
+            .method(Method::PATCH)
+            .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
+            .body(Body::from(r#"{ "text": "" }"#))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn should_return_400_when_update_todo_with_text_over_100_chars() {
+        let repository = TodoRepositoryForMemory::new();
+        let todo = repository.create(CreateTodo {
+            text: "元のテキスト".to_string(),
+        });
+        let long_text = "a".repeat(101);
+
+        let app = create_app(repository);
+
+        let req = Request::builder()
+            .uri(format!("/todos/{}", todo.id))
+            .method(Method::PATCH)
+            .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
+            .body(Body::from(format!(r#"{{ "text": "{}" }}"#, long_text)))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
