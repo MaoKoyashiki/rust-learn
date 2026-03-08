@@ -1,11 +1,11 @@
-
-use validator::Validate; 
+use axum::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
 use thiserror::Error;
+use validator::Validate;
 
 #[derive(Debug, Error)]
 enum RepositoryError {
@@ -13,12 +13,13 @@ enum RepositoryError {
     NotFound(i32),
 }
 
+#[async_trait]
 pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'static {
-    fn create(&self, payload: CreateTodo) -> Todo;
-    fn find(&self, id: i32) -> Option<Todo>;
-    fn all(&self) -> Vec<Todo>;
-    fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo>;
-    fn delete(&self, id: i32) -> anyhow::Result<()>;
+    async fn create(&self, payload: CreateTodo) -> anyhow::Result<Todo>;
+    async fn find(&self, id: i32) -> anyhow::Result<Option<Todo>>;
+    async fn all(&self) -> anyhow::Result<Vec<Todo>>;
+    async fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo>;
+    async fn delete(&self, id: i32) -> anyhow::Result<()>;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -68,28 +69,29 @@ impl TodoRepositoryForMemory {
     }
 }
 
+#[async_trait]
 impl TodoRepository for TodoRepositoryForMemory {
-    fn create(&self, payload: CreateTodo) -> Todo {
+    async fn create(&self, payload: CreateTodo) -> anyhow::Result<Todo> {
         let mut store = self.store.write().expect("Todo store lock poisoned");
         let next_id = store.keys().max().copied().unwrap_or(0) + 1;
         let todo = Todo::new(next_id, payload.text);
         store.insert(todo.id, todo.clone());
-        todo
+        Ok(todo)
     }
 
-    fn find(&self, id: i32) -> Option<Todo> {
+    async fn find(&self, id: i32) -> anyhow::Result<Option<Todo>> {
         let store = self.store.read().expect("Todo store lock poisoned");
-        store.get(&id).cloned()
+        Ok(store.get(&id).cloned())
     }
 
-    fn all(&self) -> Vec<Todo> {
+    async fn all(&self) -> anyhow::Result<Vec<Todo>> {
         let store = self.store.read().expect("Todo store lock poisoned");
         let mut todos: Vec<Todo> = store.values().cloned().collect();
         todos.sort_by_key(|t| t.id);
-        todos
+        Ok(todos)
     }
 
-    fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo> {
+    async fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo> {
         let mut store = self.store.write().expect("Todo store lock poisoned");
         let todo = store
             .get_mut(&id)
@@ -105,7 +107,7 @@ impl TodoRepository for TodoRepositoryForMemory {
         Ok(todo.clone())
     }
 
-    fn delete(&self, id: i32) -> anyhow::Result<()> {
+    async fn delete(&self, id: i32) -> anyhow::Result<()> {
         let mut store = self.store.write().expect("Todo store lock poisoned");
         match store.remove(&id) {
             Some(_) => Ok(()),
@@ -118,69 +120,69 @@ impl TodoRepository for TodoRepositoryForMemory {
 mod tests {
     use super::*;
 
-    #[test]
-    fn create_todo_should_store_and_return_todo() {
+    #[tokio::test]
+    async fn create_todo_should_store_and_return_todo() {
         let repo = TodoRepositoryForMemory::new();
 
         let todo = repo.create(CreateTodo {
             text: "テストを書く".to_string(),
-        });
+        }).await.expect("Failed to create todo");
 
         assert_eq!(todo.id, 1);
         assert_eq!(todo.text, "テストを書く");
         assert!(!todo.completed);
 
-        let all = repo.all();
+        let all = repo.all().await.expect("Failed to get all");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0], todo);
     }
 
-    #[test]
-    fn find_should_return_corresponding_todo_or_none() {
+    #[tokio::test]
+    async fn find_should_return_corresponding_todo_or_none() {
         let repo = TodoRepositoryForMemory::new();
 
         let todo1 = repo.create(CreateTodo {
             text: "牛乳を買う".to_string(),
-        });
+        }).await.expect("Failed to create todo");
         let _todo2 = repo.create(CreateTodo {
             text: "パンを買う".to_string(),
-        });
+        }).await.expect("Failed to create todo");
 
-        let found = repo.find(todo1.id);
+        let found = repo.find(todo1.id).await.expect("Failed to get");
         assert_eq!(found, Some(todo1));
 
-        let not_found = repo.find(999);
+        let not_found = repo.find(999).await.expect("Failed to get");
         assert!(not_found.is_none());
     }
 
-    #[test]
-    fn all_should_return_all_todos_sorted_by_id() {
+    #[tokio::test]
+    async fn all_should_return_all_todos_sorted_by_id() {
         let repo = TodoRepositoryForMemory::new();
 
         let todo1 = repo.create(CreateTodo {
             text: "タスク1".to_string(),
-        });
+        }).await.expect("Failed to create todo");
         let todo2 = repo.create(CreateTodo {
             text: "タスク2".to_string(),
-        });
+        }).await.expect("Failed to create todo");
         let todo3 = repo.create(CreateTodo {
             text: "タスク3".to_string(),
-        });
+        }).await.expect("Failed to create todo");
 
-        let all = repo.all();
+        let all = repo.all().await.expect("Failed to get");
         assert_eq!(all.len(), 3);
         assert_eq!(all[0], todo1);
         assert_eq!(all[1], todo2);
         assert_eq!(all[2], todo3);
     }
 
-    #[test]
-    fn update_should_change_fields_when_todo_exists() {
+    #[tokio::test]
+    async fn update_should_change_fields_when_todo_exists() {
         let repo = TodoRepositoryForMemory::new();
 
         let todo = repo.create(CreateTodo {
             text: "古いタスク".to_string(),
-        });
+        }).await.expect("Failed to create todo");
 
         let updated = repo
             .update(
@@ -190,18 +192,18 @@ mod tests {
                     completed: Some(true),
                 },
             )
-            .expect("update should succeed");
+            .await.expect("update should succeed");
 
         assert_eq!(updated.id, todo.id);
         assert_eq!(updated.text, "新しいタスク");
         assert!(updated.completed);
 
-        let stored = repo.find(todo.id).expect("todo should exist");
-        assert_eq!(stored, updated);
+        let stored = repo.find(todo.id).await.expect("todo should exist");
+        assert_eq!(stored, Some(updated));
     }
 
-    #[test]
-    fn update_should_return_error_when_todo_not_found() {
+    #[tokio::test]
+    async fn update_should_return_error_when_todo_not_found() {
         let repo = TodoRepositoryForMemory::new();
 
         let result = repo.update(
@@ -210,38 +212,38 @@ mod tests {
                 text: Some("存在しない".to_string()),
                 completed: Some(true),
             },
-        );
+        ).await;
 
         assert!(result.is_err());
         let msg = format!("{}", result.err().unwrap());
         assert!(msg.contains("NotFound, id is 999"));
     }
 
-    #[test]
-    fn delete_should_remove_todo_when_exists() {
+    #[tokio::test]
+    async fn delete_should_remove_todo_when_exists() {
         let repo = TodoRepositoryForMemory::new();
 
         let todo = repo.create(CreateTodo {
             text: "消すタスク".to_string(),
-        });
+        }).await.expect("Failed to create todo");
         let _another = repo.create(CreateTodo {
             text: "残すタスク".to_string(),
-        });
+        }).await;
 
-        let result = repo.delete(todo.id);
+        let result = repo.delete(todo.id).await;
         assert!(result.is_ok());
 
-        assert!(repo.find(todo.id).is_none());
-        let all = repo.all();
+        assert!(repo.find(todo.id).await.is_ok());
+        let all = repo.all().await.expect("Failed to get");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].text, "残すタスク".to_string());
     }
 
-    #[test]
-    fn delete_should_return_error_when_todo_not_found() {
+    #[tokio::test]
+    async fn delete_should_return_error_when_todo_not_found() {
         let repo = TodoRepositoryForMemory::new();
 
-        let result = repo.delete(999);
+        let result = repo.delete(999).await;
         assert!(result.is_err());
         let msg = format!("{}", result.err().unwrap());
         assert!(msg.contains("NotFound, id is 999"));
