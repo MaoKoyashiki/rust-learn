@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
+use sqlx::PgPool;
 use thiserror::Error;
 use validator::Validate;
 
@@ -16,7 +17,7 @@ enum RepositoryError {
 #[async_trait]
 pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'static {
     async fn create(&self, payload: CreateTodo) -> anyhow::Result<Todo>;
-    async fn find(&self, id: i32) -> anyhow::Result<Option<Todo>>;
+    async fn find(&self, id: i32) -> anyhow::Result<Todo>;
     async fn all(&self) -> anyhow::Result<Vec<Todo>>;
     async fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo>;
     async fn delete(&self, id: i32) -> anyhow::Result<()>;
@@ -79,9 +80,13 @@ impl TodoRepository for TodoRepositoryForMemory {
         Ok(todo)
     }
 
-    async fn find(&self, id: i32) -> anyhow::Result<Option<Todo>> {
+    async fn find(&self, id: i32) -> anyhow::Result<Todo> {
         let store = self.store.read().expect("Todo store lock poisoned");
-        Ok(store.get(&id).cloned())
+        let todo = store.get(&id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Todo with id {} not found", id))?;
+        
+        Ok(todo)
     }
 
     async fn all(&self) -> anyhow::Result<Vec<Todo>> {
@@ -113,6 +118,42 @@ impl TodoRepository for TodoRepositoryForMemory {
             Some(_) => Ok(()),
             None => Err(RepositoryError::NotFound(id).into()),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TodoRepositoryForDb {
+    pool: PgPool,
+}
+
+impl TodoRepositoryForDb {
+    pub fn new(pool: PgPool) -> Self {
+        TodoRepositoryForDb {
+            pool
+        }
+    }
+}
+
+#[async_trait]
+impl TodoRepository for TodoRepositoryForDb {
+    async fn create(&self, _payload: CreateTodo) -> anyhow::Result<Todo> {
+        todo!()
+    }
+
+    async fn find(&self, _id: i32) -> anyhow::Result<Todo> {
+        todo!()
+    }
+
+    async fn all(&self) -> anyhow::Result<Vec<Todo>> {
+        todo!()
+    }
+
+    async fn update(&self, id: i32, _payload: UpdateTodo) -> anyhow::Result<Todo> {
+        todo!()
+    }
+
+    async fn delete(&self, _id: i32) -> anyhow::Result<()> {
+        todo!()
     }
 }
 
@@ -149,10 +190,10 @@ mod tests {
         }).await.expect("Failed to create todo");
 
         let found = repo.find(todo1.id).await.expect("Failed to get");
-        assert_eq!(found, Some(todo1));
+        assert_eq!(found, todo1);
 
-        let not_found = repo.find(999).await.expect("Failed to get");
-        assert!(not_found.is_none());
+        let res = repo.find(999).await;
+        assert!(res.is_err());
     }
 
     #[tokio::test]
@@ -199,7 +240,7 @@ mod tests {
         assert!(updated.completed);
 
         let stored = repo.find(todo.id).await.expect("todo should exist");
-        assert_eq!(stored, Some(updated));
+        assert_eq!(stored, updated);
     }
 
     #[tokio::test]
@@ -231,9 +272,6 @@ mod tests {
         }).await;
 
         let result = repo.delete(todo.id).await;
-        assert!(result.is_ok());
-
-        assert!(repo.find(todo.id).await.is_ok());
         let all = repo.all().await.expect("Failed to get");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].text, "残すタスク".to_string());

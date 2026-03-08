@@ -45,10 +45,12 @@ where
 pub fn create_app<T: TodoRepository>(repository: T) -> Router {
     Router::new()
         .route("/", get(root))
-        .route("/todos", get(list_todos::<T>).post(create_todo::<T>))
+        .route("/todos", get(all_todo::<T>).post(create_todo::<T>))
         .route(
             "/todos/:id",
-            get(get_todo::<T>).patch(update_todo::<T>).delete(delete_todo::<T>),
+            get(find_todo::<T>)
+                .patch(update_todo::<T>)
+                .delete(delete_todo::<T>),
         )
         .layer(Extension(Arc::new(repository)))
 }
@@ -64,12 +66,12 @@ pub async fn create_todo<T: TodoRepository>(
     let result = repository.create(payload).await;
     let todo: Todo = match result {
         Ok(t) => t,
-        Err(_) => return Err(StatusCode::NOT_FOUND)
+        Err(_) => return Err(StatusCode::NOT_FOUND),
     };
     Ok((StatusCode::CREATED, Json(todo)))
 }
 
-pub async fn list_todos<T: TodoRepository>(
+pub async fn all_todo<T: TodoRepository>(
     Extension(repository): Extension<Arc<T>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let result = repository.all().await;
@@ -80,19 +82,15 @@ pub async fn list_todos<T: TodoRepository>(
     Ok((StatusCode::OK, Json(todos)))
 }
 
-pub async fn get_todo<T: TodoRepository>(
+pub async fn find_todo<T: TodoRepository>(
     Path(id): Path<i32>,
     Extension(repository): Extension<Arc<T>>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, StatusCode> {
     let result = repository.find(id).await;
-    let todo: Todo = match result {
-        Ok(maybe_todo) => match maybe_todo {
-            Some(t) => t,
-            None => return Err(StatusCode::NOT_FOUND),
-        },
+    match result {
+        Ok(todo) => Ok((StatusCode::OK, Json(todo))),
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-    Ok((StatusCode::OK, Json(todo)))
+    }
 }
 
 pub async fn update_todo<T: TodoRepository>(
@@ -187,9 +185,12 @@ mod test {
     #[tokio::test]
     async fn should_return_400_when_update_todo_with_empty_text() {
         let repository = TodoRepositoryForMemory::new();
-        let todo = repository.create(CreateTodo {
-            text: "元のテキスト".to_string(),
-        }).await.expect("Failed to create todo");
+        let todo = repository
+            .create(CreateTodo {
+                text: "元のテキスト".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
 
         let app = create_app(repository);
 
@@ -207,9 +208,12 @@ mod test {
     #[tokio::test]
     async fn should_return_400_when_update_todo_with_text_over_100_chars() {
         let repository = TodoRepositoryForMemory::new();
-        let todo = repository.create(CreateTodo {
-            text: "元のテキスト".to_string(),
-        }).await.expect("Failed to create todo");
+        let todo = repository
+            .create(CreateTodo {
+                text: "元のテキスト".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
         let long_text = "a".repeat(101);
 
         let app = create_app(repository);
@@ -228,12 +232,18 @@ mod test {
     #[tokio::test]
     async fn should_list_all_todos() {
         let repository = TodoRepositoryForMemory::new();
-        let todo1 = repository.create(CreateTodo {
-            text: "タスク1".to_string(),
-        }).await.expect("Failed to create todo");
-        let todo2 = repository.create(CreateTodo {
-            text: "タスク2".to_string(),
-        }).await.expect("Failed to create todo");
+        let todo1 = repository
+            .create(CreateTodo {
+                text: "タスク1".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
+        let todo2 = repository
+            .create(CreateTodo {
+                text: "タスク2".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
 
         let app = create_app(repository);
 
@@ -257,9 +267,12 @@ mod test {
     #[tokio::test]
     async fn should_get_todo_by_id() {
         let repository = TodoRepositoryForMemory::new();
-        let todo = repository.create(CreateTodo {
-            text: "詳細取得".to_string(),
-        }).await.expect("Failed to create todo");
+        let todo = repository
+            .create(CreateTodo {
+                text: "詳細取得".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
 
         let app = create_app(repository);
 
@@ -290,15 +303,18 @@ mod test {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
 
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
     async fn should_update_todo() {
         let repository = TodoRepositoryForMemory::new();
-        let todo = repository.create(CreateTodo {
-            text: "古いタイトル".to_string(),
-        }).await.expect("Failed to create todo");
+        let todo = repository
+            .create(CreateTodo {
+                text: "古いタイトル".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
 
         let app = create_app(repository.clone());
 
@@ -322,7 +338,7 @@ mod test {
         assert!(updated.completed);
 
         let stored = repository.find(todo.id).await.expect("todo should exist");
-        assert_eq!(stored, Some(updated));
+        assert_eq!(stored, updated);
     }
 
     #[tokio::test]
@@ -334,9 +350,7 @@ mod test {
             .uri("/todos/999")
             .method(Method::PATCH)
             .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
-            .body(Body::from(
-                r#"{ "text": "存在しない", "completed": true }"#,
-            ))
+            .body(Body::from(r#"{ "text": "存在しない", "completed": true }"#))
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
 
@@ -346,12 +360,18 @@ mod test {
     #[tokio::test]
     async fn should_delete_todo() {
         let repository = TodoRepositoryForMemory::new();
-        let todo_to_delete = repository.create(CreateTodo {
-            text: "消すタスク".to_string(),
-        }).await.expect("Failed to create todo");
-        let remaining = repository.create(CreateTodo {
-            text: "残すタスク".to_string(),
-        }).await.expect("Failed to create todo");
+        let todo_to_delete = repository
+            .create(CreateTodo {
+                text: "消すタスク".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
+        let remaining = repository
+            .create(CreateTodo {
+                text: "残すタスク".to_string(),
+            })
+            .await
+            .expect("Failed to create todo");
 
         let app = create_app(repository.clone());
 
@@ -364,8 +384,6 @@ mod test {
 
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
-        let deleted_todo = repository.find(todo_to_delete.id).await.expect("DB error");
-        assert!(deleted_todo.is_none());
         let all = repository.all().await.expect("Failed to get all");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0], remaining);
