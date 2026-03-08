@@ -139,9 +139,10 @@ impl TodoRepositoryForDb {
 #[async_trait]
 impl TodoRepository for TodoRepositoryForDb {
     async fn create(&self, payload: CreateTodo) -> anyhow::Result<Todo> {
-        let todo = sqlx::query::<_, Todo>(
+        println!("aaa");
+        let todo = sqlx::query_as::<_, Todo>(
             r#"
-insert into todos {text, completed}
+insert into todos (text, completed)
 values ($1, false)
 returning *
             "#,
@@ -176,7 +177,6 @@ select * from todos where id=$1
 select * from todos
             "#,
             )
-            .bind(id)
             .fetch_all(&self.pool)
             .await?;
 
